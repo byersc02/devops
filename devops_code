@@ -1,0 +1,98 @@
+#!/bin/bash
+#####
+# 10/30/2016 Chris Byers
+# This is example code. Please do not attempt to run.
+# Assumptions: ssh keys set in place as ec2-user, existing AWS instances
+#####
+
+# Existing hosts for this demo
+export PUPPET=ec2-54-149-83-110.us-west-2.compute.amazonaws.com
+export APACHE=ec2-54-244-38-103.us-west-2.compute.amazonaws.com
+
+# update packages on hosts
+for i in $PUPPET $APACHE
+do
+  ssh $i "sudo yum -y update"
+done
+
+# install pachages on the puppet server
+ssh $PUPPET "rpm -ivh http://yum.puppetlabs.com/puppetlabs-release-el-7.noarch.rpm"
+ssh $PUPPET "yum repolist"
+ssh $PUPPET "yum -y install puppet-server"
+ssh $PUPPET "systemctl enable puppetmaster; systemctl start pupupetmaster; systemctl enable puppet; systemctl start puppet"
+ssh $PUPPET "sed -i '/ssldir\ =\ \$vardir\/ssl/a server\ =\ $PUPPET' /etc/puppet/puppet.conf
+ssh $PUPPET "systemctl restart puppetmaster; systemctl restart puppet"
+ssh $PUPPET "puppet agent -t"
+ssh $PUPPET "puppet cert list"
+ssh $PUPPET "puppet cert sign $PUPPET"
+
+# install puppet agent on client and sign cert
+ssh $APACHE "yum -y install puppet"
+ssh $APACHE "systemctl enable puppet; systemctl start puppet"
+ssh $APACHE "sed -i '/ssldir\ =\ \$vardir\/ssl/a server\ =\ $PUPPET' /etc/puppet/puppet.conf
+ssh $APACHE "systemctl restart puppet
+ssh $APACHE "puppet agent -t"
+ssh $PUPPET "puppet cert list"
+ssh $PUPPET "puppet cert sign $APACHE"
+ssh $APACHE "puppet agent -t"
+
+# Add apache and iptables puppet modules to PUPPET server
+ssh $PUPPET "puppet module install puppetlabs-apache"
+ssh $PUPPET "puppet module install puppetlabs-firewall"
+
+# Add index.html (hellow world) to apache module
+ssh $PUPPET echo "<html>" > /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "<head>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "<title>Hello World</title>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "</head>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "<body>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "<h1>Hello World!</h1>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "</body>" >> /etc/puppet/modules/apache/files/index.html
+ssh $PUPPET echo "</html>" >> /etc/puppet/modules/apache/files/index.html
+
+# Add site.pp to $PUPPET for deployment
+ssh $PUPPET echo "node 'ip-172-31-5-216.us-west-2.compute.internal' {" > /etc/puppet/manifests
+ssh $PUPPET echo "  include apache" >> /etc/puppet/manifests
+ssh $PUPPET echo "  include firewall" >> /etc/puppet/manifests
+ssh $PUPPET echo "  apache::vhost { 'ip-172-31-5-216.us-west-2.compute.internal non-ssl':" >> /etc/puppet/manifests
+ssh $PUPPET echo "    servername          => 'ip-172-31-5-216.us-west-2.compute.internal'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    port                => '80'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    docroot             => '/var/www/html'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    redirect_status     => 'permanent'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    redirect_dest       => 'https://ip-172-31-5-216.us-west-2.compute.internal/'" >> /etc/puppet/manifests
+ssh $PUPPET echo "  }" >> /etc/puppet/manifests
+ssh $PUPPET echo "" >> /etc/puppet/manifests
+ssh $PUPPET echo "  apache::vhost { 'ip-172-31-5-216.us-west-2.compute.internal ssl':" >> /etc/puppet/manifests
+ssh $PUPPET echo "    servername          => 'ip-172-31-5-216.us-west-2.compute.internal'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    port                => '443'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    docroot             => '/var/www/html'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    ssl                 => true," >> /etc/puppet/manifests
+ssh $PUPPET echo "  }" >> /etc/puppet/manifests
+ssh $PUPPET echo "" >> /etc/puppet/manifests
+ssh $PUPPET echo "  file { 'index.html':" >> /etc/puppet/manifests
+ssh $PUPPET echo "    path        => '/var/www/html/index.html'," >> /etc/puppet/manifests
+ssh $PUPPET echo "    ensure      => file," >> /etc/puppet/manifests
+ssh $PUPPET echo "    source      => "puppet:///modules/apache/index.html"," >> /etc/puppet/manifests
+ssh $PUPPET echo "  }" >> /etc/puppet/manifests
+ssh $PUPPET echo "" >> /etc/puppet/manifests
+ssh $PUPPET echo "  firewall { '100 allow ssh, http, https and puppet access':" >> /etc/puppet/manifests
+ssh $PUPPET echo "    dport   => [22, 80, 443, 8140, 8142, 61613]," >> /etc/puppet/manifests
+ssh $PUPPET echo "    proto  => tcp," >> /etc/puppet/manifests
+ssh $PUPPET echo "    action => accept," >> /etc/puppet/manifests
+ssh $PUPPET echo "  }" >> /etc/puppet/manifests
+ssh $PUPPET echo "" >> /etc/puppet/manifests
+ssh $PUPPET echo "}" >> /etc/puppet/manifests
+
+# Install on client
+ssh $APACHE "puppet agent -t"
+
+########
+# test the deployment
+########
+TEST=`curl -k https://ec2-54-244-38-103.us-west-2.compute.amazonaws.com |grep "Hello World\!"`
+if [[ $TEST != "" ]]
+then
+        echo "It worked"
+else
+        echo "It didn't work"
+fi
